@@ -358,90 +358,100 @@ class SigParser(Parser):
                  is_compound = True
                  d_list = doses
         # Scenario 2: 1 dose, N frequencies (1:N mapping)
+        # Scenario 2: 1 dose, N frequencies (1:N mapping)
         elif len(doses) == 1 and len(frequencies) > 1:
-             # Refinement: Check for redundant "daily" + "at night" patterns
-             # If we have a generic 'daily' frequency AND a specific 'time' frequency, 
-             # and they are not separated by 'and', assume one refines the other.
+             # Refinement logic:
+             # 1. Prefer specific frequencies over generic ones (daily, twice daily)
+             # 2. Prefer frequencies with specific period/frequency info (every other day)
+             # 3. Avoid redundant mentions of the same time segment (morning, am)
              
-             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily')
-             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday') # Updated
+             # Expanded generic pattern to include bid, tid, and "X times a day"
+             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday|twice daily|bid|3 times daily|tid|4 times daily|qid|((once|twice|three|four|five|\d+)(\s*times)?\s*(a|per)\s*(day|daily))')
              specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
              
-             # Check for separators
-             sorted_freq = sorted(frequencies, key=lambda x: x['frequency_text_start'])
+             # Sort frequencies: 
+             # First by 'information density' (non-default period/frequency first)
+             # Then by start position to maintain connectivity check order for identical weights
+             sorted_freq = sorted(frequencies, key=lambda x: (
+                 (x.get('period', 1) or 1) == 1 and (x.get('frequency', 1) or 1) == 1,
+                 x['frequency_text_start']
+             ))
              
-             keep_all = False
+             has_specific_in_original = any(specific_time_pattern.search(f.get('frequency_text', '').lower()) for f in sorted_freq)
              
-             for i in range(len(sorted_freq) - 1):
-                 f1 = sorted_freq[i]
-                 f2 = sorted_freq[i+1]
-                 
-                 # Check text between
-                 start = f1['frequency_text_end']
-                 end = f2['frequency_text_start']
-                 between_text = sig_text[start:end].lower()
-                 
-                 if 'and' in between_text or '&' in between_text:
-                     keep_all = True
-                     break
+             # Time segment mapping
+             segments = {
+                 'morning': ['morning', 'am', 'breakfast'],
+                 'noon': ['noon', 'lunch'],
+                 'evening': ['evening', 'pm', 'dinner', 'supper'],
+                 'night': ['night', 'bedtime', 'hs', 'sleep']
+             }
              
-             if not keep_all:
-                 # Filter out redundant matches
-                 # 1. Filter generic daily if specific exists
-                 # 2. Filter redundant time segments (e.g. night + bedtime)
-                 
-                 # Determine if any specific time frequency exists in the original list
-                 has_specific_in_original = any(specific_time_pattern.search(f.get('frequency_text', '').lower()) for f in sorted_freq)
-                 
-                 # Time segment mapping for redundancy check
-                 segments = {
-                     'morning': ['morning', 'am', 'breakfast'],
-                     'noon': ['noon', 'lunch'],
-                     'evening': ['evening', 'pm', 'dinner', 'supper'],
-                     'night': ['night', 'bedtime', 'hs', 'sleep']
-                 }
-                 
-                 def get_segment(text):
-                     text = text.lower()
-                     for seg, keywords in segments.items():
-                         if any(k in text for k in keywords):
-                             return seg
-                     return None
+             def get_segment(text):
+                 text = text.lower()
+                 for seg, keywords in segments.items():
+                     if any(k in text for k in keywords):
+                         return seg
+                 return None
 
-                 filtered_freq = []
-                 processed_segments = set()
-                 processed_texts = set()
-                 
-                 for f in sorted_freq:
-                     txt = f.get('frequency_text', '').lower()
-                     
-                     if txt in processed_texts:
-                         continue
-                     processed_texts.add(txt)
+             filtered_freq = []
+             processed_segments = set()
+             processed_texts = set()
+             has_kept_generic = False
+             
+             for i, f in enumerate(sorted_freq):
+                  txt = f.get('frequency_text', '').lower()
+                  
+                  if txt in processed_texts:
+                      continue
+                  processed_texts.add(txt)
 
-                     is_generic_match = generic_daily_pattern.search(txt)
-                     is_specific_match = specific_time_pattern.search(txt)
-                     
-                     segment = get_segment(txt)
-                     
-                     # Rule 1: If a frequency is generic-like AND there are specific frequencies,
-                     # AND this generic frequency doesn't also map to a specific segment, filter it.
-                     # This prevents filtering "every night" if it's also specific.
-                     if is_generic_match and has_specific_in_original and not is_specific_match:
-                         continue
+                  # A frequency is generic if it matched the generic pattern AND is not also a specific time
+                  is_generic_match = (generic_daily_pattern.fullmatch(txt) or 
+                                     (generic_daily_pattern.search(txt) and not specific_time_pattern.search(txt)))
+                  segment = get_segment(txt)
+                  
+                  # Connectivity check for list-style additive frequencies
+                  # We use the ORIGINAL order (sorted by start) for this check to look correctly at 'and'
+                  connected = False
+                  original_sorted = sorted(frequencies, key=lambda x: x['frequency_text_start'])
+                  idx_in_orig = next(j for j, of in enumerate(original_sorted) if of['frequency_text_start'] == f['frequency_text_start'])
+                  
+                  if idx_in_orig > 0:
+                      prev_f = original_sorted[idx_in_orig-1]
+                      between = sig_text[prev_f['frequency_text_end']:f['frequency_text_start']].lower()
+                      if re.search(r'\band\b|&|,', between):
+                          connected = True
+                  if not connected and idx_in_orig < len(original_sorted) - 1:
+                      next_f = original_sorted[idx_in_orig+1]
+                      between = sig_text[f['frequency_text_end']:next_f['frequency_text_start']].lower()
+                      if re.search(r'\band\b|&|,', between):
+                          connected = True
 
-                     # Rule 2: If this frequency maps to a time segment, check for redundancy
-                     if segment:
-                         if segment in processed_segments:
-                             continue # This segment has already been covered by a previous frequency
-                         processed_segments.add(segment)
-                     
-                     filtered_freq.append(f)
+                  # Rule 1: Generic vs Specific
+                  if is_generic_match and has_specific_in_original and not connected:
+                      continue
+                  
+                  # Rule 1b: Deduplicate generics if multiple exist without connection
+                  if is_generic_match and has_kept_generic and not connected:
+                      continue
 
-                 if filtered_freq:
-                     frequencies = filtered_freq
-                     # Update all_matches so get_max_dose uses the filtered list
-                     all_matches['frequency'] = frequencies
+                  # Rule 2: Segment Redundancy
+                  if segment and not connected:
+                      if segment in processed_segments:
+                          continue
+                      processed_segments.add(segment)
+                  elif segment:
+                      processed_segments.add(segment)
+                  
+                  if is_generic_match:
+                      has_kept_generic = True
+                      
+                  filtered_freq.append(f)
+
+             if filtered_freq:
+                  frequencies = filtered_freq
+                  all_matches['frequency'] = frequencies
 
              if len(frequencies) > 1:
                  # Check ambiguity on final frequencies list
