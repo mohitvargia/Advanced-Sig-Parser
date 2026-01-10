@@ -25,7 +25,7 @@ class SigParser(Parser):
     # TODO: make this match_keys assignment more elegant
     #match_keys = ['original_sig_text'] + ['sig_text', 'sig_readable', 'max_dose_per_day'] + method.parsers[0].match_keys + dose.parsers[0].match_keys + strength.parsers[0].match_keys + route.parsers[0].match_keys + frequency.parsers[0].match_keys + when.parsers[0].match_keys + duration.parsers[0].match_keys + indication.parsers[0].match_keys + max.parsers[0].match_keys + additional_info.parsers[0].match_keys
     #match_keys = ['sig_text', 'sig_readable', 'max_dose_per_day'] + method.parsers[0].match_keys + dose.parsers[0].match_keys + strength.parsers[0].match_keys + route.parsers[0].match_keys + frequency.parsers[0].match_keys + when.parsers[0].match_keys + duration.parsers[0].match_keys + indication.parsers[0].match_keys + max_parser.parsers[0].match_keys + additional_info.parsers[0].match_keys
-    OUTPUT_KEYS = ['sig_text', 'sig_readable', 'max_dose_per_day', 'dose', 'frequency', 'dose_unit', 'strength_unit', 'strength']
+    OUTPUT_KEYS = ['sig_text', 'sig_readable', 'max_dose_per_day', 'dose', 'frequency', 'dose_unit', 'strength_unit', 'strength', 'Is_Sig_Parsable']
     match_keys = OUTPUT_KEYS
     parser_type = 'sig'
 
@@ -109,6 +109,19 @@ class SigParser(Parser):
         # Return sorted by position
         return sorted(kept, key=lambda x: x[start_key])
 
+    def _check_ambiguity(self, sig_text, items):
+        # Sort items by start
+        sorted_items = sorted(items, key=lambda x: x.get('frequency_text_start', 0) if 'frequency_text_start' in x else x.get('dose_text_start', 0))
+        for i in range(len(sorted_items) - 1):
+            end = sorted_items[i].get('frequency_text_end') or sorted_items[i].get('dose_text_end')
+            start = sorted_items[i+1].get('frequency_text_start') or sorted_items[i+1].get('dose_text_start')
+            if end is not None and start is not None:
+                 between = sig_text[end:start]
+                 if 'or' in between: 
+                     if re.search(r'\bor\b', between):
+                         return True
+        return False
+
     def get_max_dose_per_day(self, match_dict, all_matches=None):
         # Helper to calculate single component max dose
         def calculate_component(d_match, f_match):
@@ -145,6 +158,8 @@ class SigParser(Parser):
         # Calculate using all_matches if available
         calculated_max_dose = None
         
+        sig_text = match_dict.get('sig_text', '').lower()
+        
         if all_matches:
             doses = self.filter_matches(all_matches.get('dose', []), 'dose_text_start', 'dose_text_end')
             frequencies = self.filter_matches(all_matches.get('frequency', []), 'frequency_text_start', 'frequency_text_end')
@@ -153,12 +168,20 @@ class SigParser(Parser):
             if len(doses) == len(frequencies) and len(doses) > 0:
                 total = 0
                 valid = True
-                for d, f in zip(doses, frequencies):
-                    val = calculate_component(d, f)
-                    if val is None:
-                        valid = False
-                        break
-                    total += val
+                
+                # Check for "OR" ambiguity between elements
+                if self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses):
+                    # AMBIGUOUS -> Return None immediately
+                    return None
+                    
+                else:
+                    for d, f in zip(doses, frequencies):
+                        val = calculate_component(d, f)
+                        if val is None:
+                            valid = False
+                            break
+                        total += val
+                
                 if valid:
                     calculated_max_dose = total
             
@@ -166,13 +189,17 @@ class SigParser(Parser):
             elif len(doses) == 1 and len(frequencies) > 1:
                 total = 0
                 valid = True
-                d = doses[0]
-                for f in frequencies:
-                    val = calculate_component(d, f)
-                    if val is None:
-                        valid = False
-                        break
-                    total += val
+                
+                if self._check_ambiguity(sig_text, frequencies):
+                    return None
+                else:
+                    d = doses[0]
+                    for f in frequencies:
+                        val = calculate_component(d, f)
+                        if val is None:
+                            valid = False
+                            break
+                        total += val
                 if valid:
                     calculated_max_dose = total
         
@@ -200,7 +227,13 @@ class SigParser(Parser):
         #match_dict['original_sig_text'] = sig_text
         sig_text = self.get_normalized_sig_text(sig_text)
         match_dict['sig_text'] = sig_text
+        match_dict['Is_Sig_Parsable'] = True # Default
         
+        # Guardrail: "increasing nature" (titration, "then", "increase")
+        titration_pattern = re.compile(r'\b(then|titrat[e|i]\w*|increas[e|i]\w*|taper)\b')
+        if titration_pattern.search(sig_text):
+            match_dict['Is_Sig_Parsable'] = False
+
         all_matches = {}
 
         for parser_type, parsers in self.parsers.items():
@@ -233,9 +266,9 @@ class SigParser(Parser):
         
         # Scenario 1: N doses, N frequencies (1:1 mapping)
         if len(doses) > 1 and len(doses) == len(frequencies):
-             is_compound = True
-
-             d_list = doses
+             if not (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
+                 is_compound = True
+                 d_list = doses
         # Scenario 2: 1 dose, N frequencies (1:N mapping)
         elif len(doses) == 1 and len(frequencies) > 1:
              # Refinement: Check for redundant "daily" + "at night" patterns
@@ -243,55 +276,90 @@ class SigParser(Parser):
              # and they are not separated by 'and', assume one refines the other.
              
              generic_daily_pattern = re.compile(r'daily|qd|every day|once daily')
+             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every') # Updated to include 'every'
              specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
              
-             has_generic = False
-             has_specific = False
+             # Check for separators
+             sorted_freq = sorted(frequencies, key=lambda x: x['frequency_text_start'])
              
-             # Identify types
-             for f in frequencies:
-                 txt = f.get('frequency_text', '').lower()
-                 if generic_daily_pattern.search(txt): has_generic = True
-                 if specific_time_pattern.search(txt): has_specific = True
-
-             if has_generic and has_specific:
-                 # Check for separators
-
-                 sorted_freq = sorted(frequencies, key=lambda x: x['frequency_text_start'])
+             keep_all = False
+             
+             for i in range(len(sorted_freq) - 1):
+                 f1 = sorted_freq[i]
+                 f2 = sorted_freq[i+1]
                  
-                 new_frequencies = []
-                 keep_all = False
+                 # Check text between
+                 start = f1['frequency_text_end']
+                 end = f2['frequency_text_start']
+                 between_text = sig_text[start:end].lower()
                  
-                 for i in range(len(sorted_freq) - 1):
-                     f1 = sorted_freq[i]
-                     f2 = sorted_freq[i+1]
+                 if 'and' in between_text or '&' in between_text:
+                     keep_all = True
+                     break
+             
+             if not keep_all:
+                 # Filter out redundant matches
+                 # 1. Filter generic daily if specific exists
+                 # 2. Filter redundant time segments (e.g. night + bedtime)
+                 
+                 # Determine if any specific time frequency exists in the original list
+                 has_specific_in_original = any(specific_time_pattern.search(f.get('frequency_text', '').lower()) for f in sorted_freq)
+                 
+                 # Time segment mapping for redundancy check
+                 segments = {
+                     'morning': ['morning', 'am', 'breakfast'],
+                     'noon': ['noon', 'lunch'],
+                     'evening': ['evening', 'pm', 'dinner', 'supper'],
+                     'night': ['night', 'bedtime', 'hs', 'sleep']
+                 }
+                 
+                 def get_segment(text):
+                     text = text.lower()
+                     for seg, keywords in segments.items():
+                         if any(k in text for k in keywords):
+                             return seg
+                     return None
+
+                 filtered_freq = []
+                 processed_segments = set()
+                 processed_texts = set()
+                 
+                 for f in sorted_freq:
+                     txt = f.get('frequency_text', '').lower()
                      
-                     # Check text between
-                     start = f1['frequency_text_end']
-                     end = f2['frequency_text_start']
-                     between_text = sig_text[start:end].lower()
-                     if 'and' in between_text or '&' in between_text:
-                         keep_all = True
-                         break
-                 
-                 if not keep_all:
-                     # Filter out generic daily matches, prefer specific
-                     for f in frequencies:
-                         txt = f.get('frequency_text', '').lower()
-                         if specific_time_pattern.search(txt):
-                             new_frequencies.append(f)
-                         elif not generic_daily_pattern.search(txt): 
-                             # Keep if it's neither (e.g. valid other frequency)
-                             new_frequencies.append(f)
-                             
-                     if new_frequencies:
-                         frequencies = new_frequencies
-                         # Update all_matches so get_max_dose uses the filtered list
-                         all_matches['frequency'] = frequencies
+                     if txt in processed_texts:
+                         continue
+                     processed_texts.add(txt)
+
+                     is_generic_match = generic_daily_pattern.search(txt)
+                     is_specific_match = specific_time_pattern.search(txt)
+                     
+                     segment = get_segment(txt)
+                     
+                     # Rule 1: If a frequency is generic-like AND there are specific frequencies,
+                     # AND this generic frequency doesn't also map to a specific segment, filter it.
+                     # This prevents filtering "every night" if it's also specific.
+                     if is_generic_match and has_specific_in_original and not is_specific_match:
+                         continue
+
+                     # Rule 2: If this frequency maps to a time segment, check for redundancy
+                     if segment:
+                         if segment in processed_segments:
+                             continue # This segment has already been covered by a previous frequency
+                         processed_segments.add(segment)
+                     
+                     filtered_freq.append(f)
+
+                 if filtered_freq:
+                     frequencies = filtered_freq
+                     # Update all_matches so get_max_dose uses the filtered list
+                     all_matches['frequency'] = frequencies
 
              if len(frequencies) > 1:
-                 is_compound = True
-                 d_list = [doses[0]] * len(frequencies)
+                 # Check ambiguity on final frequencies list
+                 if not self._check_ambiguity(sig_text, frequencies):
+                     is_compound = True
+                     d_list = [doses[0]] * len(frequencies)
              else:
                  # Reverted to single frequency scenario
                  is_compound = False
@@ -364,12 +432,41 @@ class SigParser(Parser):
                 pieces = [method, combined_parts, route, duration, indication, additional_info]
                 match_dict['sig_readable'] = ' '.join([p for p in pieces if p])
                 match_dict['sig_readable'] = ' '.join(match_dict['sig_readable'].split()) # Clean spaces
-        
         if not is_compound:
             match_dict['sig_readable'] = self.get_readable(match_dict)
         match_dict ['max_dose_per_day'] = self.get_max_dose_per_day(match_dict, all_matches)
 
+        # Final Guardrails
+        if match_dict.get('max_dose_per_day') is None:
+             # Could be ambiguity, or just failure to calculate. 
+             # But if it was ambiguous OR (Scenario 1 & 2 in get_max returned None), it is None.
+             # If simple sig like "apple" -> max_dose is None. That's also unparsable properly.
+             # But user requirement: "if in a sig you find multiple dosage ... return null ... and Is_Sig_Parsable = false"
+             # If max_dose is None due to Ambiguity (OR), we should flag it here?
+             # But get_max_dose just returns None.
+             # We need to trust that if max_dose is None, it might be unparsable? 
+             # Actually, simpler sigs might not have max dose but be valid? e.g. "apply topically" -> max dose None?
+             # Let's check ambiguity again or rely on the fact that if get_max returned None AND we had doses/freqs..
+             
+             # Specific check for Ambiguity or multiple doses:
+             pass
+
+        # Check for multiple unhandled doses
+        if len(doses) > 1 and not is_compound:
+             match_dict['Is_Sig_Parsable'] = False
+             
+        # Check if max_dose calculation detected ambiguity (it returned None)
+        # But wait, max_dose can be None for valid topical sigs.
+        # So we should explicitly re-check ambiguity here to be sure, OR rely on a flag?
+        # get_max_dose_per_day is stateless.
+        # Let's re-run ambiguity check just for the flag if we have matches.
+        if all_matches and (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
+             match_dict['Is_Sig_Parsable'] = False
+
         if not verbose:
+            if not match_dict.get('Is_Sig_Parsable', True):
+                # Return all None except flag
+                return {k: (False if k == 'Is_Sig_Parsable' else None) for k in self.OUTPUT_KEYS}
             return {k: match_dict.get(k) for k in self.OUTPUT_KEYS}
 
         # calculate admin instructions based on leftover pieces of sig
