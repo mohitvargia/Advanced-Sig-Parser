@@ -230,11 +230,30 @@ class SigParser(Parser):
         match_dict['Is_Sig_Parsable'] = True # Default
         
         # Guardrail: "increasing nature" (titration, "then", "increase")
-        titration_pattern = re.compile(r'\b(then|titrat[e|i]\w*|increas[e|i]\w*|taper)\b')
+        # Exclude "and then" which is just a connector, not titration
+        titration_pattern = re.compile(r'(?<!and\s)\b(then|titrat[e|i]\w*|increas[e|i]\w*|taper)\b')
         if titration_pattern.search(sig_text):
             match_dict['Is_Sig_Parsable'] = False
 
         all_matches = {}
+
+        # Common patterns for frequency refinement
+        generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday|twice daily|bid|3 times daily|tid|4 times daily|qid|((once|twice|three|four|five|\d+)(\s*times)?\s*(a|per)\s*(day|daily))')
+        specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
+        
+        segments = {
+            'morning': ['morning', 'am', 'breakfast'],
+            'noon': ['noon', 'lunch'],
+            'evening': ['evening', 'pm', 'dinner', 'supper'],
+            'night': ['night', 'bedtime', 'hs', 'sleep']
+        }
+        
+        def get_segment(text):
+            text = text.lower()
+            for seg, keywords in segments.items():
+                if any(k in text for k in keywords):
+                    return seg
+            return None
 
         for parser_type, parsers in self.parsers.items():
             matches = []
@@ -313,65 +332,51 @@ class SigParser(Parser):
         # Scenario 1: N doses, N frequencies (1:1 mapping)
         if len(doses) > 1 and len(doses) == len(frequencies):
              if not (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
-                 
-                 # Check for full component redundancy (e.g. "take 1 tablet daily" repeated)
-                 # Reconstruct patterns locally (should probably move these to class level)
-                 generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday') 
-                 specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
-                 
-                 pairs = list(zip(doses, frequencies))
-                 unique_pairs = []
-                 processed_sigs = []
-                 
-                 for d, f in pairs:
-                     d_val = d.get('dose')
-                     d_unit = d.get('dose_unit')
-                     f_text = f.get('frequency_text', '').lower()
-                     
-                     is_generic = bool(generic_daily_pattern.search(f_text))
-                     
-                     # Simple signature for redundancy check
-                     # We treat "daily" and "every day" as identical (Generic)
-                     # We treat "morning" and "evening" as distinct (Specific)
-                     
-                     if is_generic:
-                         sig_key = (d_val, d_unit, 'GENERIC_DAILY')
-                     else:
-                         sig_key = (d_val, d_unit, f_text) # Use exact text for specific (or segment logic?)
-                         # Better: use segments logic from Scenario 2 if we want robust specific check
-                         # But let's start with exact text + generic daily normalization
-                     
-                     if sig_key in processed_sigs:
-                         continue
-                         
-                     processed_sigs.append(sig_key)
-                     unique_pairs.append((d, f))
-                     
-                 # Update lists
-                 if unique_pairs:
-                     doses = [p[0] for p in unique_pairs]
-                     frequencies = [p[1] for p in unique_pairs]
-                     # CRITICAL: Update all_matches so get_max_dose_per_day sees the filtered lists
-                     all_matches['dose'] = doses
-                     all_matches['frequency'] = frequencies
-                 
-                 is_compound = True
-                 d_list = doses
-        # Scenario 2: 1 dose, N frequencies (1:N mapping)
+                  
+                  # Check for full component redundancy (e.g. "take 1 tablet daily" repeated)
+                  pairs = list(zip(doses, frequencies))
+                  unique_pairs = []
+                  processed_sigs = set()
+                  
+                  for d, f in pairs:
+                      d_val = (d.get('dose'), d.get('dose_max'))
+                      d_unit = d.get('dose_unit')
+                      f_text = f.get('frequency_text', '').lower()
+                      
+                      segment_val = get_segment(f_text)
+                      is_pure_gen = generic_daily_pattern.search(f_text) and not specific_time_pattern.search(f_text)
+                      
+                      # Build identity for deduplication
+                      if segment_val:
+                          identity = f"SEG_{segment_val}"
+                      elif is_pure_gen:
+                          identity = "GENERIC_DAILY"
+                      else:
+                          identity = f_text
+                          
+                      sig_key = (d_val, d_unit, f.get('frequency'), f.get('period'), f.get('period_unit'), identity)
+                      
+                      if sig_key in processed_sigs:
+                          continue
+                          
+                      processed_sigs.add(sig_key)
+                      unique_pairs.append((d, f))
+                      
+                  # Update lists
+                  if unique_pairs:
+                      doses = [p[0] for p in unique_pairs]
+                      frequencies = [p[1] for p in unique_pairs]
+                      # CRITICAL: Update all_matches so get_max_dose_per_day sees the filtered lists
+                      all_matches['dose'] = doses
+                      all_matches['frequency'] = frequencies
+                  
+                  is_compound = True
+                  d_list = doses
         # Scenario 2: 1 dose, N frequencies (1:N mapping)
         elif len(doses) == 1 and len(frequencies) > 1:
-             # Refinement logic:
-             # 1. Prefer specific frequencies over generic ones (daily, twice daily)
-             # 2. Prefer frequencies with specific period/frequency info (every other day)
-             # 3. Avoid redundant mentions of the same time segment (morning, am)
+             # Refinement logic: Prefer specific/dense info and avoid redundancy
              
-             # Expanded generic pattern to include bid, tid, and "X times a day"
-             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday|twice daily|bid|3 times daily|tid|4 times daily|qid|((once|twice|three|four|five|\d+)(\s*times)?\s*(a|per)\s*(day|daily))')
-             specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
-             
-             # Sort frequencies: 
-             # First by 'information density' (non-default period/frequency first)
-             # Then by start position to maintain connectivity check order for identical weights
+             # Sort frequencies: information density (non-default period/frequency) first
              sorted_freq = sorted(frequencies, key=lambda x: (
                  (x.get('period', 1) or 1) == 1 and (x.get('frequency', 1) or 1) == 1,
                  x['frequency_text_start']
@@ -379,21 +384,6 @@ class SigParser(Parser):
              
              has_specific_in_original = any(specific_time_pattern.search(f.get('frequency_text', '').lower()) for f in sorted_freq)
              
-             # Time segment mapping
-             segments = {
-                 'morning': ['morning', 'am', 'breakfast'],
-                 'noon': ['noon', 'lunch'],
-                 'evening': ['evening', 'pm', 'dinner', 'supper'],
-                 'night': ['night', 'bedtime', 'hs', 'sleep']
-             }
-             
-             def get_segment(text):
-                 text = text.lower()
-                 for seg, keywords in segments.items():
-                     if any(k in text for k in keywords):
-                         return seg
-                 return None
-
              filtered_freq = []
              processed_segments = set()
              processed_texts = set()

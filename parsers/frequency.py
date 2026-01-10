@@ -162,6 +162,8 @@ class FrequencyEveryDay(FrequencyParser):
 				if 'evening' in raw_unit and 'bedtime' not in raw_unit: readable_unit = 'in the evening'
 				if 'afternoon' in raw_unit: readable_unit = 'in the afternoon'
 				if 'night' in raw_unit: readable_unit = 'at night'
+				if raw_unit in ['noon', 'lunch']: readable_unit = 'at noon'
+				if raw_unit in ['dinner', 'supper']: readable_unit = 'with dinner'
 			
 			frequency_readable = f"every {readable_unit.replace('in the ', '').replace('at ', '')}"
 		else:
@@ -190,7 +192,7 @@ class FrequencySpecificDayOfWeek(FrequencyParser):
 # morning | evening | afternoon
 # frequency = 1, when = a
 class FrequencyInTheX(FrequencyParser):
-	pattern = r'(?:in\s?(?:the\s?)?)?(morning|evening|afternoon)'
+	pattern = r'(?:in\s?(?:the\s?)?)?(morning|evening|afternoon|noon|lunch|dinner|supper)'
 	def normalize_match(self, match):
 		frequency = 1
 		period = 1
@@ -205,7 +207,7 @@ class FrequencyInTheX(FrequencyParser):
 # bedtime | night | nightly
 # frequency = 1, when = a (normalize to HS)
 class FrequencyAtBedtime(FrequencyParser):
-	pattern = r'((?:at )?bedtime|(?:at )night|nightly)'
+	pattern = r'\b((?:at\s+)?bedtime|(?:at\s+)?night|nightly)\b'
 	def normalize_match(self, match):
 		frequency = 1
 		period = 1
@@ -214,6 +216,34 @@ class FrequencyAtBedtime(FrequencyParser):
 		frequency_text = match.group(0)
 		frequency_readable = frequency_text # Use specific text instead of 'daily'
 		return self.generate_match({'frequency': frequency, 'period': period, 'period_unit': period_unit, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
+
+
+
+# once or twice [a|per] day
+# 1 or 2 times daily
+# Handles "or" in frequency ranges to avoid ambiguity flagging
+class FrequencyOrRange(FrequencyParser):
+	pattern = r'(?:(?P<frequency_min>once|twice|\d+(?:-\d+)?)\s+or\s+(?P<frequency_max>once|twice|\d+(?:-\d+)?)\s*(?:times?|x)?\s*(?:per|a|each)?\s*(?P<period_unit>day|daily|week|month|year)?|(?:once|twice)\s+or\s+(?:once|twice))'
+	def normalize_match(self, match):
+		freq_min = match.group('frequency_min') or match.group(0).split('or')[0].strip()
+		freq_max = match.group('frequency_max') or match.group(0).split('or')[1].strip()
+		
+		# Convert words to numbers
+		word_to_num = {'once': 1, 'twice': 2}
+		frequency = word_to_num.get(freq_min.lower(), number_text_to_int(freq_min) if freq_min else 1)
+		frequency_max = word_to_num.get(freq_max.lower(), number_text_to_int(freq_max) if freq_max else 1)
+		
+		period = 1
+		period_unit_str = match.group('period_unit')
+		if period_unit_str:
+			period_unit = get_normalized(PERIOD_UNIT, period_unit_str)
+		else:
+			period_unit = 'day'  # Default to daily
+		
+		frequency_text_start, frequency_text_end = match.span()
+		frequency_text = match.group(0)
+		frequency_readable = self.get_readable(frequency=frequency, frequency_max=frequency_max, period=period, period_unit=period_unit)
+		return self.generate_match({'frequency': frequency, 'frequency_max': frequency_max, 'period': period, 'period_unit': period_unit, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
 
 
 # x1 | x 1
@@ -257,6 +287,7 @@ parsers = [
 	FrequencySpecificDayOfWeek(),
 	FrequencyInTheX(),
 	FrequencyAtBedtime(),
+	FrequencyOrRange(),  # Must come before FrequencyOneTime to catch "once or twice" patterns
 	FrequencyOneTime(),
 	# FrequencyAsDirected(), # NOTE: removing this parser for DRX implementation - may consider adding back
 ]
