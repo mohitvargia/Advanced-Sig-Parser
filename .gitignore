@@ -1,0 +1,12 @@
+# ParseRx specific
+csv/*.csv
+csv/output/*.csv
+
+# byte-compiled / optimized / DLL files
+__pycache__/
+
+# environments
+.env
+.venv
+env/
+venv/
