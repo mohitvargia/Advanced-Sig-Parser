@@ -192,7 +192,7 @@ class FrequencySpecificDayOfWeek(FrequencyParser):
 # morning | evening | afternoon
 # frequency = 1, when = a
 class FrequencyInTheX(FrequencyParser):
-	pattern = r'(?:in\s?(?:the\s?)?)?(morning|evening|afternoon|noon|lunch|dinner|supper)'
+	pattern = r'(?:in\s?(?:the\s?)?)?(morning|evening|afternoon|noon|lunch|dinner|supper|am|pm)\b'
 	def normalize_match(self, match):
 		frequency = 1
 		period = 1
