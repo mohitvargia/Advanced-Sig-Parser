@@ -68,7 +68,7 @@ class DoseOnlyParser(DoseParser):
             # and join them with a | character
             # and add them to the dose_patterns array
             strength_unit_patterns.append(r'|'.join(p))        
-        pattern = re.compile(r'\b(?:' + r'|'.join(method_patterns) + r')?\s?(?P<dose>' + RE_RANGE + r')(?!(?:\s)?\d)(?!(?:\s)?(?:times|x))(?!\s?(?:' + r'|'.join(strength_unit_patterns) + r'))(?!\s?(?:days?|weeks?|months?|hours?|hrs?|minutes?|mins?|years?|yrs?)\b)', flags = re.I)
+        pattern = re.compile(r'\b(?:' + r'|'.join(method_patterns) + r')?\s?(?P<dose>' + RE_RANGE + r')(?!(?:\s)?(?:\d|\.|\/))(?!(?:\s)?(?:times|x))(?!\s?(?:' + r'|'.join(strength_unit_patterns) + r'))(?!\s?(?:days?|weeks?|months?|hours?|hrs?|minutes?|mins?|years?|yrs?)\b)', flags = re.I)
         return pattern
     def normalize_match(self, match):
         dose_range = split_range(match.group('dose'))

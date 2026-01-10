@@ -551,10 +551,13 @@ class SigParser(Parser):
         if all_matches and (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
              match_dict['Is_Sig_Parsable'] = False
 
+        if titration_pattern.search(sig_text):
+             match_dict['Is_Sig_Parsable'] = False
+
         if not verbose:
             if not match_dict.get('Is_Sig_Parsable', True):
-                # Return all None except flag
-                return {k: (False if k == 'Is_Sig_Parsable' else None) for k in self.OUTPUT_KEYS}
+                # Return all None except flag and sig_text
+                return {k: (match_dict.get(k) if k in ['sig_text', 'Is_Sig_Parsable'] else None) for k in self.OUTPUT_KEYS}
             return {k: match_dict.get(k) for k in self.OUTPUT_KEYS}
 
         # calculate admin instructions based on leftover pieces of sig
