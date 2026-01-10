@@ -133,6 +133,18 @@ class TestRedundancy(unittest.TestCase):
                     "strength_unit": None,
                     "strength": None
                 }
+            },
+            {
+                "input": "take 1 capsule by mouth once daily at night",
+                "expected": {
+                    "sig_readable": "take 1 capsule by mouth at night", 
+                    "max_dose_per_day": 1.0,
+                    "dose": 1,
+                    "frequency": 1,
+                    "dose_unit": "capsule",
+                    "strength_unit": None,
+                    "strength": None
+                }
             }
         ]
 

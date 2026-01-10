@@ -238,12 +238,74 @@ class SigParser(Parser):
              d_list = doses
         # Scenario 2: 1 dose, N frequencies (1:N mapping)
         elif len(doses) == 1 and len(frequencies) > 1:
-             is_compound = True
-             # Replicate the single dose for pairing
-             d_list = [doses[0]] * len(frequencies)
+             # Refinement: Check for redundant "daily" + "at night" patterns
+             # If we have a generic 'daily' frequency AND a specific 'time' frequency, 
+             # and they are not separated by 'and', assume one refines the other.
+             
+             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily')
+             specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
+             
+             has_generic = False
+             has_specific = False
+             
+             # Identify types
+             for f in frequencies:
+                 txt = f.get('frequency_text', '').lower()
+                 if generic_daily_pattern.search(txt): has_generic = True
+                 if specific_time_pattern.search(txt): has_specific = True
+
+             if has_generic and has_specific:
+                 # Check for separators
+
+                 sorted_freq = sorted(frequencies, key=lambda x: x['frequency_text_start'])
+                 
+                 new_frequencies = []
+                 keep_all = False
+                 
+                 for i in range(len(sorted_freq) - 1):
+                     f1 = sorted_freq[i]
+                     f2 = sorted_freq[i+1]
+                     
+                     # Check text between
+                     start = f1['frequency_text_end']
+                     end = f2['frequency_text_start']
+                     between_text = sig_text[start:end].lower()
+                     if 'and' in between_text or '&' in between_text:
+                         keep_all = True
+                         break
+                 
+                 if not keep_all:
+                     # Filter out generic daily matches, prefer specific
+                     for f in frequencies:
+                         txt = f.get('frequency_text', '').lower()
+                         if specific_time_pattern.search(txt):
+                             new_frequencies.append(f)
+                         elif not generic_daily_pattern.search(txt): 
+                             # Keep if it's neither (e.g. valid other frequency)
+                             new_frequencies.append(f)
+                             
+                     if new_frequencies:
+                         frequencies = new_frequencies
+                         # Update all_matches so get_max_dose uses the filtered list
+                         all_matches['frequency'] = frequencies
+
+             if len(frequencies) > 1:
+                 is_compound = True
+                 d_list = [doses[0]] * len(frequencies)
+             else:
+                 # Reverted to single frequency scenario
+                 is_compound = False
+                 match = doses[0]
+                 match.update(frequencies[0]) # Merge freq data into dose match
+                 # match_dict has original data. We need to OVERWRITE it with this specific chosen match.
+                 for k, v in match.items():
+                    match_dict[k] = v
+                 
+                 # IMPORTANT: match_dict might contain 'frequency' from the generic match if it appeared first in original parsing loop.
+                 # Ensure 'frequency' is updated.
+                 match_dict['frequency'] = frequencies[0].get('frequency')
              
         if is_compound:
-            total_freq = 0
             total_freq = 0
             readable_parts = []
             
@@ -252,8 +314,6 @@ class SigParser(Parser):
                 # Frequency match must have a frequency value to be counted
                 return m.get('frequency') is not None
             
-            # Validate pairs before proceeding
-            valid_pairs = True
             # Validate pairs before proceeding
             valid_pairs = True
             for d, f in zip(d_list, frequencies):
