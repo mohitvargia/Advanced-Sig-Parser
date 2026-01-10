@@ -73,8 +73,8 @@ class DoseOnlyParser(DoseParser):
     def normalize_match(self, match):
         dose_range = split_range(match.group('dose'))
         dose, dose_max = dose_range
-        dose_text_start, dose_text_end = match.span()
-        dose_text = match[0]
+        dose_text_start, dose_text_end = match.span('dose')
+        dose_text = match.group('dose')
         dose_readable = self.get_readable(dose=dose, dose_max=dose_max)
         return self.generate_match({'dose': dose, 'dose_max': dose_max, 'dose_text_start': dose_text_start, 'dose_text_end': dose_text_end, 'dose_text': dose_text, 'dose_readable': dose_readable})
 

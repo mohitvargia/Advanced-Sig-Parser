@@ -89,11 +89,11 @@ class SigParser(Parser):
         
     def filter_matches(self, matches, start_key, end_key):
         if not matches: return []
-        # Sort by length descending to prioritize identifying 'best' matches first
-        matches_sorted = sorted(matches, key=lambda x: (x[end_key] - x[start_key]), reverse=True)
+        # Sort by start_key ASC, then end_key DESC (longest first)
+        sorted_matches = sorted(matches, key=lambda x: (x[start_key], -x[end_key]))
         
         kept = []
-        for m in matches_sorted:
+        for m in sorted_matches:
             m_start = m[start_key]
             m_end = m[end_key]
             overlap = False
@@ -261,12 +261,54 @@ class SigParser(Parser):
         doses = self.filter_matches(all_matches.get('dose', []), 'dose_text_start', 'dose_text_end')
         frequencies = self.filter_matches(all_matches.get('frequency', []), 'frequency_text_start', 'frequency_text_end')
         
-        is_compound = False
+        is_compound = False  
 
         
         # Scenario 1: N doses, N frequencies (1:1 mapping)
         if len(doses) > 1 and len(doses) == len(frequencies):
              if not (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
+                 
+                 # Check for full component redundancy (e.g. "take 1 tablet daily" repeated)
+                 # Reconstruct patterns locally (should probably move these to class level)
+                 generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every') 
+                 specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
+                 
+                 pairs = list(zip(doses, frequencies))
+                 unique_pairs = []
+                 processed_sigs = []
+                 
+                 for d, f in pairs:
+                     d_val = d.get('dose')
+                     d_unit = d.get('dose_unit')
+                     f_text = f.get('frequency_text', '').lower()
+                     
+                     is_generic = bool(generic_daily_pattern.search(f_text))
+                     
+                     # Simple signature for redundancy check
+                     # We treat "daily" and "every day" as identical (Generic)
+                     # We treat "morning" and "evening" as distinct (Specific)
+                     
+                     if is_generic:
+                         sig_key = (d_val, d_unit, 'GENERIC_DAILY')
+                     else:
+                         sig_key = (d_val, d_unit, f_text) # Use exact text for specific (or segment logic?)
+                         # Better: use segments logic from Scenario 2 if we want robust specific check
+                         # But let's start with exact text + generic daily normalization
+                     
+                     if sig_key in processed_sigs:
+                         continue
+                         
+                     processed_sigs.append(sig_key)
+                     unique_pairs.append((d, f))
+                     
+                 # Update lists
+                 if unique_pairs:
+                     doses = [p[0] for p in unique_pairs]
+                     frequencies = [p[1] for p in unique_pairs]
+                     # CRITICAL: Update all_matches so get_max_dose_per_day sees the filtered lists
+                     all_matches['dose'] = doses
+                     all_matches['frequency'] = frequencies
+                 
                  is_compound = True
                  d_list = doses
         # Scenario 2: 1 dose, N frequencies (1:N mapping)
