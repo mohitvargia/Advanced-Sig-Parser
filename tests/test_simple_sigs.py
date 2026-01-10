@@ -100,5 +100,41 @@ class TestSimpleSigs(unittest.TestCase):
                 # These should be parsable
                 self.assertTrue(result['Is_Sig_Parsable'], f"Should be parsable: {sig}")
 
+    def test_mwf_sigs(self):
+        """Test Monday-Wednesday-Friday dosing patterns"""
+        sigs = [
+            "take 1 tablet by mouth daily every monday wednesday and friday",
+            "take one 1 tablets by mouth once a day on monday wednesday and friday",
+        ]
+        for sig in sigs:
+            with self.subTest(sig=sig):
+                result = self.parser.parse(sig)
+                self.assertTrue(result['Is_Sig_Parsable'])
+                self.assertEqual(result['dose'], 1.0)
+                self.assertEqual(result['max_dose_per_day'], 1.0)
+
+    def test_frequency_refinement_issues(self):
+        """Test sigs where time-of-day creates refinement ambiguity"""
+        # These sigs now correctly marked UNPARSABLE to avoid wrong max_dose values
+        sigs = [
+            "take 1/2 tablet by mouth 1 time a day in the morning",
+            "take 1/2 tablet by mouth 1 time a day in the morning for fluid/blood presure",
+        ]
+        for sig in sigs:
+            with self.subTest(sig=sig):
+                result = self.parser.parse(sig)
+                # Now correctly marked as unparsable to avoid wrong values
+                self.assertFalse(result['Is_Sig_Parsable'], 
+                               f"Should be unparsable due to refinement ambiguity: {sig}")
+
+    def test_each_week_refinement(self):
+        """Test that 'each week' creates refinement ambiguity"""
+        # This sig now correctly marked UNPARSABLE to avoid counting frequencies twice
+        sig = "take one 1 tablets by mouth once a day monday wednesday and friday of each week"
+        result = self.parser.parse(sig)
+        # Now correctly marked as unparsable
+        self.assertFalse(result['Is_Sig_Parsable'],
+                        "Should be unparsable: 'each week' creates refinement ambiguity")
+
 if __name__ == '__main__':
     unittest.main()

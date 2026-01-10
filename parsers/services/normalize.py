@@ -428,20 +428,10 @@ EXCLUDED_MDD_DOSE_UNITS = [
   # 'mL',
   'L',
   'international unit',
-  'unit',
   'mEq',
   'teaspoon',
   'tablespoon',
-  'puff',
-  'application',
-  'spray',
-  'drop',
-  'syringe',
-  'vial',
-  'packet',
-  'pen',
   'oz',
-  'injection',
   'cm',
 ]
 
@@ -672,6 +662,7 @@ DOSE_UNITS = {
   'device': [],
   'pea-sized amount': ['pea-sized'],
   'to the affected area': ['aaa'],
+  'click': ['clicks'],
 }
 
 PAIN_SEVERITIES = {
