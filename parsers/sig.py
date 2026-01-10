@@ -261,7 +261,53 @@ class SigParser(Parser):
         doses = self.filter_matches(all_matches.get('dose', []), 'dose_text_start', 'dose_text_end')
         frequencies = self.filter_matches(all_matches.get('frequency', []), 'frequency_text_start', 'frequency_text_end')
         
-        is_compound = False  
+        # Guardrail: Filter adjacent redundant doses (e.g. "one 1")
+        if len(doses) > 1:
+             sorted_doses = sorted(doses, key=lambda x: x['dose_text_start'])
+             filtered_doses = []
+             skip_next = False
+             
+             word_map = {
+                 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+             }
+             
+             for i in range(len(sorted_doses) - 1):
+                 if skip_next:
+                     skip_next = False
+                     continue
+                     
+                 d1 = sorted_doses[i]
+                 d2 = sorted_doses[i+1]
+                 
+                 # Check adjacency (allow some chars like space, hyphen)
+                 dist = d2['dose_text_start'] - d1['dose_text_end']
+                 is_adjacent = dist <= 2 # "one 1" -> dist 1 (space). "one(1)" -> dist 0?
+                 
+                 # Check semantic match
+                 val1 = d1['dose']
+                 val2 = d2['dose']
+                 
+                 # If values equal (e.g. 1 and 1), redundancy likely if adjacent
+                 is_value_match = (val1 == val2)
+                 
+                 if is_adjacent and is_value_match:
+                     # Redundant. Keep the "better" one (usually d2 if it has unit, or just d2)
+                     # d2 ("1 tab") is usually better than d1 ("one")
+                     # So we append d2 by doing nothing now, and on next loop d2 is current.
+                     # We SKIP d1.
+                     pass 
+                 else:
+                     filtered_doses.append(d1)
+             
+             if not skip_next:
+                 filtered_doses.append(sorted_doses[-1])
+                 
+             doses = filtered_doses
+             # Update all_matches for consistency
+             all_matches['dose'] = doses
+
+        is_compound = False
 
         
         # Scenario 1: N doses, N frequencies (1:1 mapping)
@@ -270,7 +316,7 @@ class SigParser(Parser):
                  
                  # Check for full component redundancy (e.g. "take 1 tablet daily" repeated)
                  # Reconstruct patterns locally (should probably move these to class level)
-                 generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every') 
+                 generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday') 
                  specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
                  
                  pairs = list(zip(doses, frequencies))
@@ -318,7 +364,7 @@ class SigParser(Parser):
              # and they are not separated by 'and', assume one refines the other.
              
              generic_daily_pattern = re.compile(r'daily|qd|every day|once daily')
-             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every') # Updated to include 'every'
+             generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday') # Updated
              specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
              
              # Check for separators
