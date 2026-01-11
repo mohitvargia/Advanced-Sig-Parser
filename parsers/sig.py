@@ -444,51 +444,51 @@ class SigParser(Parser):
                   all_matches['frequency'] = frequencies
 
              if len(frequencies) > 1:
-                  # Guardrail: Detect likely refinement misinterpretation
-                  # Pattern: "X time(s) a day" followed by time-of-day without connector
-                  # This should refine, not add. Mark as unparsable to avoid wrong max_dose.
-                  likely_refinement = False
+                  # Scenario 2: Refinement Filtering
+                  # Filter out generic daily frequencies if they are followed by specific frequencies (refinement)
+                  indices_to_remove = set()
                   for i in range(len(frequencies) - 1):
                       f1 = frequencies[i]
                       f2 = frequencies[i+1]
                       f1_text = f1.get('frequency_text', '').lower()
                       f2_text = f2.get('frequency_text', '').lower()
                       
-                      # Check if f1 is generic daily and f2 is time-of-day
+                      # Identify frequence types
                       is_f1_daily_generic = re.search(r'(time.*day|day|daily)', f1_text)
+                      
                       is_f2_time_of_day = re.search(r'(morning|evening|night|noon|am|pm)', f2_text)
                       is_f2_days = re.search(r'(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)', f2_text)
-                      
-                      # Check if f2 is weekly period ("each week") which should refine, not add
                       is_f2_weekly = f2.get('period_unit') == 'week' and f1.get('period_unit') == 'day'
-                      
-                      # Check if they're adjacent (no connector like 'and')
+
                       between = sig_text[f1['frequency_text_end']:f2['frequency_text_start']].lower()
-                      has_connector = bool(re.search(r'\band\b|\bor\b|,|\bon\b', between))
+                      # Check for additive connectors (and, or, comma). 'on', 'at' etc imply refinement.
+                      is_additive = bool(re.search(r'\band\b|\bor\b|,', between))
                       
-                      if (is_f1_daily_generic and (is_f2_time_of_day or is_f2_weekly or is_f2_days)) and not has_connector:
-                          likely_refinement = True
-                          break
+                      # If F1 is generic daily, and F2 is specific, and NO additive connector -> Refinement
+                      if (is_f1_daily_generic and (is_f2_time_of_day or is_f2_weekly or is_f2_days)) and not is_additive:
+                           indices_to_remove.add(i)
                   
-                  if likely_refinement:
-                      # Mark as unparsable rather than return wrong value
-                      match_dict['Is_Sig_Parsable'] = False
+                  if indices_to_remove:
+                       frequencies = [f for i, f in enumerate(frequencies) if i not in indices_to_remove]
+                       all_matches['frequency'] = frequencies
+
+             # Re-evaluate logic with filtered list
+             if len(frequencies) > 1:
+                  # Still multiple frequencies -> Compound (Additive)
+                  if self._check_ambiguity(sig_text, frequencies):
+                      # If ambiguous (e.g. "or"), return None/Unparsable
+                      # Logic below handles max_dose calculation only if is_compound is True
                       is_compound = False
-                  elif not self._check_ambiguity(sig_text, frequencies):
-                      # Check ambiguity on final frequencies list
+                  else:
                       is_compound = True
                       d_list = [doses[0]] * len(frequencies)
              else:
-                  # Reverted to single frequency scenario
+                  # Merged to single frequency
                   is_compound = False
                   match = doses[0]
-                  match.update(frequencies[0]) # Merge freq data into dose match
-                  # match_dict has original data. We need to OVERWRITE it with this specific chosen match.
+                  match.update(frequencies[0])
                   for k, v in match.items():
-                     match_dict[k] = v
-                  
-                  # IMPORTANT: match_dict might contain 'frequency' from the generic match if it appeared first in original parsing loop.
-                  # Ensure 'frequency' is updated.
+                      match_dict[k] = v
                   match_dict['frequency'] = frequencies[0].get('frequency')
              
         if is_compound:
