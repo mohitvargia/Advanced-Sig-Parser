@@ -17,7 +17,7 @@ RE_WRITTEN_NUMBERS = r'one(?:\s|-)?(?:quarter|half)|quarter|half|one point (?:on
 # )
 RE_RANGE = r'(?:(?:' + RE_WRITTEN_NUMBERS + r'|(?:\d*(?:\.|/))?\d+)(?:\s*(?:to|-|or|/|&|and)\s*)(?:' + RE_WRITTEN_NUMBERS + r'|(?:\d*(?:\.|/))?\d+)|(?:\d*(?:\.|/))?\d+|(?:' + RE_WRITTEN_NUMBERS + r'))'
 
-RE_DAYS_OF_WEEK = r'monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon\b|tue\b|tues\b|wed\b|thu\b|thur\b|thurs\b|fri\b|sat\b|sun\b|m\b|tu\b|w\b|th\b|t\b|f\b|sa\b|su\b|mwf'
+RE_DAYS_OF_WEEK = r'mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|mon\b|tue\b|tues\b|wed\b|thu\b|thur\b|thurs\b|fri\b|sat\b|sun\b|m\b|tu\b|w\b|th\b|t\b|f\b|sa\b|su\b|mwf'
  
 """
   TODO: make all of the ac / pc / hs / etc

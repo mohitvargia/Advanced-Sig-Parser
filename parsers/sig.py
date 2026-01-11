@@ -379,7 +379,9 @@ class SigParser(Parser):
              # Update all_matches for consistency
              all_matches['dose'] = doses
 
-        # Apply Days of Week Factor (e.g. "on MWF" implies 3/7 weekly average)
+        # Days of week factor will be applied AFTER refinement
+        # to avoid double-counting with generic frequencies like "each week"
+        days_factor = 1.0
         days_of_week_matches = [f for f in frequencies if f.get('day_of_week')]
         if days_of_week_matches:
             found_days = set()
@@ -394,13 +396,6 @@ class SigParser(Parser):
             
             if found_days:
                 days_factor = len(found_days) / 7.0
-                # Apply to all frequencies
-                for f in frequencies:
-                     if f.get('frequency') is not None:
-                         try:
-                             f['frequency'] = float(f['frequency']) * days_factor
-                         except (ValueError, TypeError):
-                             pass
 
         is_compound = False
 
@@ -434,7 +429,9 @@ class SigParser(Parser):
                     specific_time_indices.append(i)
                     continue
                     
-                if (freq_val == 1 and p_unit == 'day') or re.search(r'(daily|every day|once a day)', txt):
+                if ((freq_val == 1 and p_unit == 'day') or 
+                    (freq_val == 1 and p_unit == 'week' and re.search(r'\b(each|every)\s+week\b', txt)) or
+                    re.search(r'(daily|every day|once a day)', txt)):
                     generic_daily_indices.append(i)
                     continue
             
@@ -459,13 +456,42 @@ class SigParser(Parser):
                  indices_to_remove.update(days_of_week_indices)
             
             elif generic_daily_indices:
-                 indices_to_remove.update(days_of_week_indices)
-                 if len(generic_daily_indices) > 1:
-                     indices_to_remove.update(generic_daily_indices[1:])
+                 # If we have days of week, keep them and remove generic patterns
+                 # (e.g., "on MWF each week" -> keep "MWF", remove "each week")
+                 if days_of_week_indices:
+                     indices_to_remove.update(generic_daily_indices)
+                 else:
+                     # No DOW, so keep generic and remove duplicates
+                     if len(generic_daily_indices) > 1:
+                         indices_to_remove.update(generic_daily_indices[1:])
 
             if indices_to_remove:
                  frequencies = [f for i, f in enumerate(frequencies) if i not in indices_to_remove]
                  all_matches['frequency'] = frequencies
+        
+        # Apply days factor AFTER refinement (so generic frequencies like "each week" are already removed)
+        if days_factor < 1.0:
+            # Check if there are still non-DOW frequencies with explicit counts
+            non_dow_freqs = [f for f in frequencies if not f.get('day_of_week')]
+            has_explicit_count = False
+            
+            for f in non_dow_freqs:
+                freq_val = f.get('frequency', 0)
+                txt = f.get('frequency_text', '').lower()
+                
+                # Check if this is a multi-count frequency (e.g., "twice weekly")
+                if (freq_val and freq_val > 1) or re.search(r'(twice|three|four|\b2\b|\b3\b|\b4\b)\s*(times|x)', txt):
+                    has_explicit_count = True
+                    break
+            
+            # Only apply factor if days are the primary frequency indicator
+            if not has_explicit_count:
+                for f in frequencies:
+                     if f.get('frequency') is not None:
+                         try:
+                             f['frequency'] = float(f['frequency']) * days_factor
+                         except (ValueError, TypeError):
+                             pass
         # Scenario 1: N doses, N frequencies (1:1 mapping)
         if len(doses) > 1 and len(doses) == len(frequencies):
              if not (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
