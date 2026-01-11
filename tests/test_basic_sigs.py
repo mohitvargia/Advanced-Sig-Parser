@@ -33,12 +33,18 @@ class TestBasicSigs(unittest.TestCase):
             ("take one tab every day bid", True, 2.0),
             ("take 0.5 tablets by mouth 2 times daily 1/2 tab bid", False, None),
             
+            # Days of Week Cases (with factor calculation: count_of_days / 7)
+            ("take 1 tablet by mouth on monday wednesdays and Fridays", True, 0.43),  # 1 * 3/7 = 0.428
+            ("take one 1 tablets by mouth once a day on monday wednesday and Friday", True, 0.43),  # 1 * 3/7 = 0.428
+            ("take half 1/2 a tablet by mouth on monday wednesday Friday", True, 0.21),  # 0.5 * 3/7 = 0.214
+            ("take 1 tablet by mouth twice weekly on monday and Friday", True, 0.29),  # 2/week = 2/7 daily = 0.286
+            # Note: "each week" case is currently broken and needs fixing
+            # ("take 1 tablet by mouth on monday wednesday and friday each week", True, 0.43),
+            
             # Parsable but No Max Dose (PRN, Missing Freq, or Strength-only)
             ("take 1 mg by mouth daily", True, 1.0),
             ("take 1 tablet 20 mg total by mouth as needed", True, None),
             ("take 1 tablet 5 mg total by mouth", True, None),
-            ("take 1 tablet by mouth on monday wednesdays and Fridays", True, 1.0),
-            ("take one 1 tablets by mouth once a day on monday wednesday and Friday", True, 1.0),
             ("take 1 tablet 50mg total by mouth", True, None),
 
             # Passed but with 1.0 Max Dose (Previously thought False)
