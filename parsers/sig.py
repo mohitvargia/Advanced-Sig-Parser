@@ -25,7 +25,7 @@ class SigParser(Parser):
     # TODO: make this match_keys assignment more elegant
     #match_keys = ['original_sig_text'] + ['sig_text', 'sig_readable', 'max_dose_per_day'] + method.parsers[0].match_keys + dose.parsers[0].match_keys + strength.parsers[0].match_keys + route.parsers[0].match_keys + frequency.parsers[0].match_keys + when.parsers[0].match_keys + duration.parsers[0].match_keys + indication.parsers[0].match_keys + max.parsers[0].match_keys + additional_info.parsers[0].match_keys
     #match_keys = ['sig_text', 'sig_readable', 'max_dose_per_day'] + method.parsers[0].match_keys + dose.parsers[0].match_keys + strength.parsers[0].match_keys + route.parsers[0].match_keys + frequency.parsers[0].match_keys + when.parsers[0].match_keys + duration.parsers[0].match_keys + indication.parsers[0].match_keys + max_parser.parsers[0].match_keys + additional_info.parsers[0].match_keys
-    OUTPUT_KEYS = ['sig_text', 'sig_readable', 'max_dose_per_day', 'dose', 'frequency', 'dose_unit', 'strength_unit', 'strength', 'Is_Sig_Parsable']
+    OUTPUT_KEYS = ['original_sig_text', 'sig_text', 'sig_readable', 'max_dose_per_day', 'dose', 'frequency', 'dose_unit', 'strength_unit', 'strength', 'Is_Sig_Parsable']
     match_keys = OUTPUT_KEYS
     parser_type = 'sig'
 
@@ -124,7 +124,7 @@ class SigParser(Parser):
 
     def get_max_dose_per_day(self, match_dict, all_matches=None):
         # Helper to calculate single component max dose
-        def calculate_component(d_match, f_match):
+        def calculate_component(d_match, f_match, ignore_exclusion=False):
             frequency = f_match.get('frequency_max') or f_match.get('frequency')
             period = f_match.get('period')
             period_unit_raw = f_match.get('period_unit')
@@ -134,7 +134,7 @@ class SigParser(Parser):
             dose = d_match.get('dose_max') or d_match.get('dose')
             # Check ignored units
             dose_unit = d_match.get('dose_unit')
-            if dose_unit in EXCLUDED_MDD_DOSE_UNITS:
+            if not ignore_exclusion and dose_unit in EXCLUDED_MDD_DOSE_UNITS:
                 return None
 
             if frequency and period_per_day and dose:
@@ -162,6 +162,20 @@ class SigParser(Parser):
         
         if all_matches:
             doses = self.filter_matches(all_matches.get('dose', []), 'dose_text_start', 'dose_text_end')
+
+            # Fallback to strengths if no doses found (e.g. "take 1 mg daily")
+            strengths_as_doses = False
+            if not doses:
+                strengths = self.filter_matches(all_matches.get('strength', []), 'strength_text_start', 'strength_text_end')
+                if strengths:
+                    strengths_as_doses = True
+                    for s in strengths:
+                        d = s.copy()
+                        d['dose'] = s.get('strength')
+                        d['dose_max'] = s.get('strength_max')
+                        d['dose_unit'] = s.get('strength_unit')
+                        doses.append(d)
+
             frequencies = self.filter_matches(all_matches.get('frequency', []), 'frequency_text_start', 'frequency_text_end')
             
             # Scenario 1: N doses, N frequencies (1:1 mapping)
@@ -176,7 +190,7 @@ class SigParser(Parser):
                     
                 else:
                     for d, f in zip(doses, frequencies):
-                        val = calculate_component(d, f)
+                        val = calculate_component(d, f, ignore_exclusion=strengths_as_doses)
                         if val is None:
                             valid = False
                             break
@@ -195,7 +209,7 @@ class SigParser(Parser):
                 else:
                     d = doses[0]
                     for f in frequencies:
-                        val = calculate_component(d, f)
+                        val = calculate_component(d, f, ignore_exclusion=strengths_as_doses)
                         if val is None:
                             valid = False
                             break
@@ -226,19 +240,56 @@ class SigParser(Parser):
         match_dict = dict(self.match_dict)
         #match_dict['original_sig_text'] = sig_text
         sig_text = self.get_normalized_sig_text(sig_text)
+        
+        # Preprocess: Replace @ symbol with 'at' for better parsing
+        sig_text = re.sub(r'@', ' at ', sig_text)
+        sig_text = re.sub(r'\s+', ' ', sig_text).strip()  # Clean up extra spaces
+        
+        # Preprocess: "one and a half" -> 1.5
+        sig_text = re.sub(r'\bone\s+and\s+a\s+half\b', '1.5', sig_text, flags=re.I)
+        # Preprocess: Typo "tablet1" -> "tablet 1"
+        sig_text = re.sub(r'(tablet|capsule|pill)(\d+)', r'\1 \2', sig_text, flags=re.I)
+        # Preprocess: Typo "half a day" -> "0.5 tablet" (likely OCR error for half a tab)
+        sig_text = re.sub(r'\bhalf\s+a\s+day\b', '0.5 tablet', sig_text, flags=re.I)
+        
         match_dict['sig_text'] = sig_text
         match_dict['Is_Sig_Parsable'] = True # Default
         
         # Guardrail: "increasing nature" (titration, "then", "increase")
-        # Exclude "and then" which is just a connector, not titration
-        titration_pattern = re.compile(r'(?<!and\s)\b(then|titrat[e|i]\w*|increas[e|i]\w*|taper)\b')
+        # Now includes "and then" as titration indicator
+        titration_pattern = re.compile(r'\b(and\s+then|then|titrat[e|i]\w*|increas[e|i]\w*|taper)\b', re.I)
         if titration_pattern.search(sig_text):
+            match_dict['Is_Sig_Parsable'] = False
+        
+        # Guardrail: Contradicting "daily" with specific days (Mon/Wed/Fri)
+        # "daily every monday wednesday friday" is contradictory
+        if re.search(r'\bdaily\b.*\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon\b|tue\b|wed\b|thu\b|fri\b|sat\b|sun\b)', sig_text, re.I):
+            if re.search(r'\bevery\s+(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri)', sig_text, re.I):
+                match_dict['Is_Sig_Parsable'] = False
+        
+        # Guardrail: Redundant/contradicting fraction notation "1/2 one-half" or "one-half 1/2"
+        if re.search(r'1/2\s+one[- ]?half|one[- ]?half\s+1/2', sig_text, re.I):
+            match_dict['Is_Sig_Parsable'] = False
+        
+        # Guardrail: Typo in day names (concatenated without spaces)
+        if re.search(r'(sunday|monday|tuesday|wednesday|thursday|friday|saturday){2,}', sig_text, re.I):
+            match_dict['Is_Sig_Parsable'] = False
+
+        # Guardrail: Redundant "daily" + "every morning" (conflicting/redundant instruction)
+        if re.search(r'\bdaily\b.*\bevery\s+morning\b|\bevery\s+morning\b.*\bdaily\b', sig_text, re.I):
+            match_dict['Is_Sig_Parsable'] = False
+        
+        # Guardrail: Ambiguous "once a day [day names]" without "on" prefix
+        # e.g., "once a day monday wednesday friday" is unclear - should be "once a day ON monday..."
+        if re.search(r'\b(once|one time)\s+(a|per|each)\s+day\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)', sig_text, re.I):
             match_dict['Is_Sig_Parsable'] = False
 
         all_matches = {}
 
         # Common patterns for frequency refinement
-        generic_daily_pattern = re.compile(r'daily|qd|every day|once daily|every|once a day|q day|qday|twice daily|bid|3 times daily|tid|4 times daily|qid|((once|twice|three|four|five|\d+)(\s*times)?\s*(a|per)\s*(day|daily))')
+        # Only match "true" generic daily frequencies. exclude multi-daily (bid, twice daily) and "every"
+        # Use negative lookbehind to ensure "daily" isn't preceded by "twice", "times", etc.
+        generic_daily_pattern = re.compile(r'\b(?<!twice\s)(?<!two\s)(?<!three\s)(?<!times\s)(?<!\d\s)(daily|qd|every\s*day|once\s*daily|once\s*a\s*day|q\s*day|qday)\b', re.I)
         specific_time_pattern = re.compile(r'morning|evening|night|bedtime|am|pm|noon')
         
         segments = {
@@ -275,6 +326,9 @@ class SigParser(Parser):
                 match = matches[0]
                 for k, v in match.items():
                     match_dict[k] = v
+
+        # Capture raw matches for unparsed digits guardrail (before filtering)
+        matches_for_guardrail = {k: v[:] for k, v in all_matches.items()}
 
         # Handle compound sigs (N doses, N frequencies)
         doses = self.filter_matches(all_matches.get('dose', []), 'dose_text_start', 'dose_text_end')
@@ -445,8 +499,9 @@ class SigParser(Parser):
 
              if len(frequencies) > 1:
                   # Scenario 2: Refinement Filtering
-                  # Filter out generic daily frequencies if they are followed by specific frequencies (refinement)
+                  # Filter out generic ONCE daily frequencies if they are followed by specific frequencies (refinement)
                   # Also filter out meal-related contexts that refine rather than add to frequency
+                  # IMPORTANT: Do NOT filter out "twice daily", "three times daily" etc - only "once daily/daily"
                   indices_to_remove = set()
                   for i in range(len(frequencies) - 1):
                       f1 = frequencies[i]
@@ -455,7 +510,20 @@ class SigParser(Parser):
                       f2_text = f2.get('frequency_text', '').lower()
                       
                       # Identify frequency types
-                      is_f1_daily_generic = re.search(r'(time.*day|day|daily)', f1_text)
+                      # Only match "once a day", "daily", "every day", "a day" - NOT "twice daily", "three times daily" etc
+                      is_f1_once_daily = (
+                          re.search(r'\b(once|one time|1 time)\s*(a|per|every)?\s*day', f1_text) or
+                          (re.search(r'\bdaily\b', f1_text) and not re.search(r'(twice|two|three|four|2|3|4)\s*(times?)?\s*daily', f1_text)) or
+                          re.search(r'\bevery\s*day\b', f1_text) or
+                          re.search(r'\ba\s*day\b', f1_text)  # Just "a day" without prefix
+                      )
+                      
+                      # Check if F1 is ANY multi-daily frequency (bid, tid, twice daily, etc)
+                      is_f1_multi_daily = (
+                          re.search(r'(twice|two|three|four|2|3|4)\s*(times?)?\s*(a\s+)?daily', f1_text) or
+                          re.search(r'(twice|two|three|four|2|3|4)\s*(times?)?\s*(a|per|every)?\s*day', f1_text) or
+                          f1.get('frequency') and f1.get('frequency', 0) > 1
+                      )
                       
                       is_f2_time_of_day = re.search(r'(morning|evening|night|noon|am|pm)', f2_text)
                       is_f2_days = re.search(r'(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)', f2_text)
@@ -464,12 +532,42 @@ class SigParser(Parser):
                       is_f2_meal = re.search(r'(breakfast|lunch|dinner|supper|meal)', f2_text)
 
                       between = sig_text[f1['frequency_text_end']:f2['frequency_text_start']].lower()
-                      # Check for additive connectors (and, or, comma). 'on', 'at', 'with', 'after' etc imply refinement.
+                      # Check for additive connectors (and, or, comma) ONLY in the text BETWEEN F1 and F2
+                      # Don't count "and" if it's within F2 (like "monday wednesday and friday")
                       is_additive = bool(re.search(r'\band\b|\bor\b|,', between))
+                      # Special case: If F2 is days of week, "and" in between is often listing days, not additive
+                      if is_f2_days and is_additive:
+                           # Check if 'and' in between just separates F1 from F2
+                           # If between is very short (just whitespace and 'on'), it's refinement
+                           if len(between.strip()) < 5 or between.strip() in ['', 'on']:
+                               is_additive = False
+                      # Check if meal context is preceded by 'with' - indicating context, not additional frequency
+                      is_with_meal = bool(re.search(r'\bwith\b', between)) and is_f2_meal
                       
-                      # If F1 is generic daily, and F2 is specific/contextual, and NO additive connector -> Refinement
-                      if (is_f1_daily_generic and (is_f2_time_of_day or is_f2_weekly or is_f2_days or is_f2_meal)) and not is_additive:
+                      # Filter scenarios:
+                      # 1. F1 is ONCE daily, F2 is specific/contextual, no additive connector -> remove F1
+                      if (is_f1_once_daily and (is_f2_time_of_day or is_f2_weekly or is_f2_days or is_f2_meal)) and not is_additive:
                            indices_to_remove.add(i)
+                      # 2. F1 is multi-daily, F2 is a meal with "with" prefix OR F2 is specific time -> remove F2 (it's context)
+                      # e.g. "twice daily with dinner" -> freq=2 (remove dinner)
+                      # e.g. "twice daily at 9am" -> freq=2 (remove 9am)
+                      elif is_f1_multi_daily and (is_with_meal or (is_f2_time_of_day and not is_additive)):
+                           indices_to_remove.add(i + 1)
+                      # 3. F1 is meal, F2 is also meal (e.g. "breakfast and dinner") -> both are context, remove both
+                      elif re.search(r'(breakfast|lunch|dinner|supper|meal)', f1_text) and is_f2_meal:
+                           indices_to_remove.add(i)
+                           indices_to_remove.add(i + 1)
+                      # 4. F1 is hourly (every X hours), F2 is just am/pm -> F2 is time context, remove F2
+                      elif f1.get('period_unit') == 'hour' and re.search(r'^(am|pm)$', f2_text.strip()):
+                           indices_to_remove.add(i + 1)
+                  
+                  # Additional pass: If we have an hourly frequency, remove all standalone am/pm
+                  has_hourly = any(f.get('period_unit') == 'hour' for f in frequencies)
+                  if has_hourly:
+                      for i, f in enumerate(frequencies):
+                          f_text = f.get('frequency_text', '').strip().lower()
+                          if f_text in ['am', 'pm'] and f.get('period_unit') != 'hour':
+                              indices_to_remove.add(i)
                   
                   if indices_to_remove:
                        frequencies = [f for i, f in enumerate(frequencies) if i not in indices_to_remove]
@@ -484,8 +582,19 @@ class SigParser(Parser):
                       is_compound = False
                   else:
                       is_compound = True
-                      d_list = [doses[0]] * len(frequencies)
-             else:
+                      if len(doses) == len(frequencies):
+                           # Perfect match: map ith dose to ith frequency
+                           # This assumes the order in text aligns (D1..F1..D2..F2 or similar)
+                           d_list = doses
+                      elif len(doses) == 1:
+                           # Single dose applies to all frequencies
+                           d_list = [doses[0]] * len(frequencies)
+                      else:
+                           # Ambiguous mapping (e.g. 2 doses for 3 frequencies).
+                           # Safer to mark unparsable
+                           match_dict['Is_Sig_Parsable'] = False
+                           is_compound = False
+             elif len(frequencies) == 1:
                   # Merged to single frequency
                   is_compound = False
                   match = doses[0]
@@ -493,6 +602,12 @@ class SigParser(Parser):
                   for k, v in match.items():
                       match_dict[k] = v
                   match_dict['frequency'] = frequencies[0].get('frequency')
+             else:
+                  # All frequencies filtered out - use dose only
+                  is_compound = False
+                  match = doses[0]
+                  for k, v in match.items():
+                      match_dict[k] = v
              
         if is_compound:
             total_freq = 0
@@ -557,6 +672,7 @@ class SigParser(Parser):
             match_dict['sig_readable'] = self.get_readable(match_dict)
         match_dict ['max_dose_per_day'] = self.get_max_dose_per_day(match_dict, all_matches)
 
+
         # Final Guardrails
         if match_dict.get('max_dose_per_day') is None:
              # Could be ambiguity, or just failure to calculate. 
@@ -587,10 +703,42 @@ class SigParser(Parser):
         if titration_pattern.search(sig_text):
              match_dict['Is_Sig_Parsable'] = False
 
+        # Guardrail: Check for unparsed digits (safety against missed doses/times/strengths)
+        # If there are numbers in the text that weren't captured by any parser, we might be missing critical info.
+        if match_dict.get('Is_Sig_Parsable'):
+             covered_indices = set()
+             for key, matches in matches_for_guardrail.items():
+                  if matches and isinstance(matches, list):
+                       for m in matches:
+                            # Infer keys based on parser name convention (e.g. dose_text_start)
+                            s_key = f"{key}_text_start"
+                            e_key = f"{key}_text_end"
+                            start = m.get(s_key)
+                            end = m.get(e_key)
+                            if start is not None and end is not None:
+                                 covered_indices.update(range(start, end))
+             
+             # Check all digits in the normalized text
+             for m in re.finditer(r'\d+', sig_text):
+                  start, end = m.span()
+                  # Check if the entire number span is covered
+                  # (range end is exclusive, but set check needs index check)
+                  span_indices = set(range(start, end))
+                  if not span_indices.issubset(covered_indices):
+                       # Found a number that wasn't parsed!
+                       match_dict['Is_Sig_Parsable'] = False
+                       break
+
+        # Safeguard: If we have Dose and Frequency matches, but Max Dose is None, mark Unparsable
+        # This catches cases like conflicting frequencies leading to calculation failure
+        if match_dict.get('Is_Sig_Parsable') and match_dict.get('max_dose_per_day') is None:
+             if match_dict.get('dose') and match_dict.get('frequency'):
+                  match_dict['Is_Sig_Parsable'] = False
+
         if not verbose:
             if not match_dict.get('Is_Sig_Parsable', True):
                 # Return all None except flag and sig_text
-                return {k: (match_dict.get(k) if k in ['sig_text', 'Is_Sig_Parsable'] else None) for k in self.OUTPUT_KEYS}
+                return {k: (match_dict.get(k) if k in ['sig_text', 'original_sig_text', 'Is_Sig_Parsable'] else None) for k in self.OUTPUT_KEYS}
             return {k: match_dict.get(k) for k in self.OUTPUT_KEYS}
 
         # calculate admin instructions based on leftover pieces of sig
@@ -619,31 +767,36 @@ class SigParser(Parser):
         # open the file and read through it line by line
         try:
             input_file_path = input_folder + input_file
-            with open(input_file_path) as csv_file:
+            with open(input_file_path, encoding='utf-8') as csv_file:
                 csv_reader = csv.reader(csv_file, delimiter=',')
                 # calculate total number of rows for progress bar
                 row_total = sum(1 for row in csv_reader)
                 row_count = 0
                 # reset csv file to beginning
                 csv_file.seek(0)
+                csv_reader = csv.reader(csv_file, delimiter=',')
                 for row in csv_reader:
                     row_count += 1
                     print_progress_bar(row_count, row_total)
                     sig = row[0]
                     parsed_sig = self.parse(sig)
                     parsed_sigs.append(parsed_sig.copy())
-        except IOError:
-            print("I/O error")
+        except Exception as e:
+            print(f"Error reading CSV: {e}")
+            import traceback
+            traceback.print_exc()
 
         try:
             output_file_path = output_folder + output_file
-            with open(output_file_path, 'w') as csv_file:
+            with open(output_file_path, 'w', encoding='utf-8', newline='') as csv_file:
                 writer = csv.DictWriter(csv_file, fieldnames=csv_columns)
                 writer.writeheader()
                 for parsed_sig in parsed_sigs:
                     writer.writerow(parsed_sig)
-        except IOError:
-            print("I/O error")
+        except Exception as e:
+            print(f"Error writing CSV: {e}")
+            import traceback
+            traceback.print_exc()
 
         return parsed_sigs
 

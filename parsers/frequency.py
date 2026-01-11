@@ -185,14 +185,34 @@ class FrequencySpecificDayOfWeek(FrequencyParser):
 		frequency_text = match.group(0)
 		frequency_readable = self.get_readable(day_of_week=day_of_week)
 		# TODO: normalize text numbers to integer numbers - maybe make separate normalize_period_unit function that also hits the text_to_int function?
-		return self.generate_match({'day_of_week': day_of_week, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
+		frequency = 1
+		period = 1
+		period_unit = 'day'
+		return self.generate_match({'frequency': frequency, 'period': period, 'period_unit': period_unit, 'day_of_week': day_of_week, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
 
+
+# at | @
+# 8am | 5:00 pm | 17:00
+# frequency = 1 (per occurrence)
+class FrequencySpecificTime(FrequencyParser):
+    pattern = r'(?:(?:at|@)\s?)?(?P<time>(?:(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s?(?:am|pm|a\.m\.|p\.m\.)|(?:0?[0-9]|1[0-9]|2[0-3]):[0-5][0-9]))\b'
+    def normalize_match(self, match):
+        frequency = 1
+        period = 1
+        period_unit = 'day'
+        frequency_text_start, frequency_text_end = match.span()
+        frequency_text = match.group(0)
+        frequency_readable = match.group('time')
+        return self.generate_match({'frequency': frequency, 'period': period, 'period_unit': period_unit, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
 
 # in the
 # morning | evening | afternoon
 # frequency = 1, when = a
+# NOTE: Meal words (dinner/lunch/breakfast/supper) are included BUT we use negative lookbehind
+# to exclude them when preceded by 'with' (e.g. "with dinner" is context, not frequency)
 class FrequencyInTheX(FrequencyParser):
-	pattern = r'(?:in\s?(?:the\s?)?)?(morning|evening|afternoon|noon|lunch|dinner|supper|am|pm)\b'
+	# Two patterns: 1) time-of-day (morning/evening/etc) 2) meal words NOT preceded by 'with'
+	pattern = r'(?:in\s?(?:the\s?)?)?(morning|evening|afternoon|noon|am|pm)\b|(?:(?:at|every|each)\s+)?(breakfast|lunch|dinner|supper)\b'
 	def normalize_match(self, match):
 		frequency = 1
 		period = 1
@@ -215,6 +235,22 @@ class FrequencyAtBedtime(FrequencyParser):
 		frequency_text_start, frequency_text_end = match.span()
 		frequency_text = match.group(0)
 		frequency_readable = frequency_text # Use specific text instead of 'daily'
+		return self.generate_match({'frequency': frequency, 'period': period, 'period_unit': period_unit, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
+
+
+# every other day | every other night | every other morning
+# frequency = 1, period = 2, periodUnit = day
+# This creates a 0.5 frequency per day (1 dose every 2 days)
+class FrequencyEveryOther(FrequencyParser):
+	pattern = r'every\s+other\s+(?P<time_word>day|night|morning|evening)'
+	def normalize_match(self, match):
+		frequency = 1
+		period = 2  # Every OTHER = every 2 days
+		period_unit = 'day'
+		frequency_text_start, frequency_text_end = match.span()
+		frequency_text = match.group(0)
+		time_word = match.group('time_word').lower()
+		frequency_readable = f"every other {time_word}"
 		return self.generate_match({'frequency': frequency, 'period': period, 'period_unit': period_unit, 'frequency_text_start': frequency_text_start, 'frequency_text_end': frequency_text_end, 'frequency_text': frequency_text, 'frequency_readable': frequency_readable})
 
 
@@ -283,8 +319,10 @@ parsers = [
 	FrequencyXTimesPerDay(),
 	FrequencyXTimesDaily(),
 	FrequencyDaily(),
+	FrequencyEveryOther(),  # Must come before FrequencyEveryDay to catch "every other" patterns
 	FrequencyEveryDay(),
 	FrequencySpecificDayOfWeek(),
+	FrequencySpecificTime(),
 	FrequencyInTheX(),
 	FrequencyAtBedtime(),
 	FrequencyOrRange(),  # Must come before FrequencyOneTime to catch "once or twice" patterns
