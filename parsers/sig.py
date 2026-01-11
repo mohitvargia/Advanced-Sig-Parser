@@ -446,6 +446,7 @@ class SigParser(Parser):
              if len(frequencies) > 1:
                   # Scenario 2: Refinement Filtering
                   # Filter out generic daily frequencies if they are followed by specific frequencies (refinement)
+                  # Also filter out meal-related contexts that refine rather than add to frequency
                   indices_to_remove = set()
                   for i in range(len(frequencies) - 1):
                       f1 = frequencies[i]
@@ -453,19 +454,21 @@ class SigParser(Parser):
                       f1_text = f1.get('frequency_text', '').lower()
                       f2_text = f2.get('frequency_text', '').lower()
                       
-                      # Identify frequence types
+                      # Identify frequency types
                       is_f1_daily_generic = re.search(r'(time.*day|day|daily)', f1_text)
                       
                       is_f2_time_of_day = re.search(r'(morning|evening|night|noon|am|pm)', f2_text)
                       is_f2_days = re.search(r'(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)', f2_text)
                       is_f2_weekly = f2.get('period_unit') == 'week' and f1.get('period_unit') == 'day'
+                      # Meal-related contexts that refine daily frequency
+                      is_f2_meal = re.search(r'(breakfast|lunch|dinner|supper|meal)', f2_text)
 
                       between = sig_text[f1['frequency_text_end']:f2['frequency_text_start']].lower()
-                      # Check for additive connectors (and, or, comma). 'on', 'at' etc imply refinement.
+                      # Check for additive connectors (and, or, comma). 'on', 'at', 'with', 'after' etc imply refinement.
                       is_additive = bool(re.search(r'\band\b|\bor\b|,', between))
                       
-                      # If F1 is generic daily, and F2 is specific, and NO additive connector -> Refinement
-                      if (is_f1_daily_generic and (is_f2_time_of_day or is_f2_weekly or is_f2_days)) and not is_additive:
+                      # If F1 is generic daily, and F2 is specific/contextual, and NO additive connector -> Refinement
+                      if (is_f1_daily_generic and (is_f2_time_of_day or is_f2_weekly or is_f2_days or is_f2_meal)) and not is_additive:
                            indices_to_remove.add(i)
                   
                   if indices_to_remove:
