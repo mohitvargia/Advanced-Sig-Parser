@@ -163,7 +163,6 @@ class SigParser(Parser):
         if all_matches:
             doses = self.filter_matches(all_matches.get('dose', []), 'dose_text_start', 'dose_text_end')
 
-            # Fallback to strengths if no doses found (e.g. "take 1 mg daily")
             strengths_as_doses = False
             if not doses:
                 strengths = self.filter_matches(all_matches.get('strength', []), 'strength_text_start', 'strength_text_end')
@@ -177,7 +176,7 @@ class SigParser(Parser):
                         doses.append(d)
 
             frequencies = self.filter_matches(all_matches.get('frequency', []), 'frequency_text_start', 'frequency_text_end')
-            
+
             # Scenario 1: N doses, N frequencies (1:1 mapping)
             if len(doses) == len(frequencies) and len(doses) > 0:
                 total = 0
@@ -380,9 +379,93 @@ class SigParser(Parser):
              # Update all_matches for consistency
              all_matches['dose'] = doses
 
+        # Apply Days of Week Factor (e.g. "on MWF" implies 3/7 weekly average)
+        days_of_week_matches = [f for f in frequencies if f.get('day_of_week')]
+        if days_of_week_matches:
+            found_days = set()
+            re_dow = re.compile(RE_DAYS_OF_WEEK, re.IGNORECASE)
+            for f in days_of_week_matches:
+                 dow_text = f.get('day_of_week', '').lower()
+                 matches = re_dow.findall(dow_text)
+                 for m in matches:
+                     norm = get_normalized(DAY_OF_WEEK, m)
+                     if norm:
+                         found_days.add(norm)
+            
+            if found_days:
+                days_factor = len(found_days) / 7.0
+                # Apply to all frequencies
+                for f in frequencies:
+                     if f.get('frequency') is not None:
+                         try:
+                             f['frequency'] = float(f['frequency']) * days_factor
+                         except (ValueError, TypeError):
+                             pass
+
         is_compound = False
 
-        
+        # Global Frequency Refinement
+        if len(frequencies) > 1:
+            multi_daily_indices = []
+            specific_time_indices = []
+            generic_daily_indices = []
+            days_of_week_indices = []
+            
+            for i, f in enumerate(frequencies):
+                txt = f.get('frequency_text', '').lower()
+                freq_val = f.get('frequency', 0)
+                p_unit = f.get('period_unit')
+                
+                is_multi = False
+                if (freq_val and freq_val > 1 and p_unit == 'day') or (p_unit == 'hour'):
+                    is_multi = True
+                elif re.search(r'(twice|three|four)\s*(times|x)?|(\b2\b|\b3\b|\b4\b)\s*(times|x)', txt):
+                    is_multi = True
+                
+                if is_multi:
+                    multi_daily_indices.append(i)
+                    continue
+
+                if f.get('day_of_week'):
+                    days_of_week_indices.append(i)
+                    continue
+                    
+                if re.search(r'(am|pm|morning|evening|night|noon|bedtime|breakfast|lunch|dinner|supper)', txt) or re.search(r'\d+:\d+', txt) or re.search(r'\bat\s+\d+\b', txt):
+                    specific_time_indices.append(i)
+                    continue
+                    
+                if (freq_val == 1 and p_unit == 'day') or re.search(r'(daily|every day|once a day)', txt):
+                    generic_daily_indices.append(i)
+                    continue
+            
+            indices_to_remove = set()
+            
+            if multi_daily_indices:
+                 indices_to_remove.update(generic_daily_indices)
+                 indices_to_remove.update(specific_time_indices)
+                 indices_to_remove.update(days_of_week_indices)
+                 
+                 if len(multi_daily_indices) > 1:
+                     seen_values = set()
+                     for idx in multi_daily_indices:
+                         val = frequencies[idx].get('frequency')
+                         if val in seen_values and val is not None:
+                             indices_to_remove.add(idx)
+                         else:
+                             seen_values.add(val)
+
+            elif specific_time_indices:
+                 indices_to_remove.update(generic_daily_indices)
+                 indices_to_remove.update(days_of_week_indices)
+            
+            elif generic_daily_indices:
+                 indices_to_remove.update(days_of_week_indices)
+                 if len(generic_daily_indices) > 1:
+                     indices_to_remove.update(generic_daily_indices[1:])
+
+            if indices_to_remove:
+                 frequencies = [f for i, f in enumerate(frequencies) if i not in indices_to_remove]
+                 all_matches['frequency'] = frequencies
         # Scenario 1: N doses, N frequencies (1:1 mapping)
         if len(doses) > 1 and len(doses) == len(frequencies):
              if not (self._check_ambiguity(sig_text, frequencies) or self._check_ambiguity(sig_text, doses)):
@@ -497,81 +580,9 @@ class SigParser(Parser):
                   frequencies = filtered_freq
                   all_matches['frequency'] = frequencies
 
-             if len(frequencies) > 1:
-                  # Scenario 2: Refinement Filtering
-                  # Filter out generic ONCE daily frequencies if they are followed by specific frequencies (refinement)
-                  # Also filter out meal-related contexts that refine rather than add to frequency
-                  # IMPORTANT: Do NOT filter out "twice daily", "three times daily" etc - only "once daily/daily"
-                  indices_to_remove = set()
-                  for i in range(len(frequencies) - 1):
-                      f1 = frequencies[i]
-                      f2 = frequencies[i+1]
-                      f1_text = f1.get('frequency_text', '').lower()
-                      f2_text = f2.get('frequency_text', '').lower()
-                      
-                      # Identify frequency types
-                      # Only match "once a day", "daily", "every day", "a day" - NOT "twice daily", "three times daily" etc
-                      is_f1_once_daily = (
-                          re.search(r'\b(once|one time|1 time)\s*(a|per|every)?\s*day', f1_text) or
-                          (re.search(r'\bdaily\b', f1_text) and not re.search(r'(twice|two|three|four|2|3|4)\s*(times?)?\s*daily', f1_text)) or
-                          re.search(r'\bevery\s*day\b', f1_text) or
-                          re.search(r'\ba\s*day\b', f1_text)  # Just "a day" without prefix
-                      )
-                      
-                      # Check if F1 is ANY multi-daily frequency (bid, tid, twice daily, etc)
-                      is_f1_multi_daily = (
-                          re.search(r'(twice|two|three|four|2|3|4)\s*(times?)?\s*(a\s+)?daily', f1_text) or
-                          re.search(r'(twice|two|three|four|2|3|4)\s*(times?)?\s*(a|per|every)?\s*day', f1_text) or
-                          f1.get('frequency') and f1.get('frequency', 0) > 1
-                      )
-                      
-                      is_f2_time_of_day = re.search(r'(morning|evening|night|noon|am|pm)', f2_text)
-                      is_f2_days = re.search(r'(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)', f2_text)
-                      is_f2_weekly = f2.get('period_unit') == 'week' and f1.get('period_unit') == 'day'
-                      # Meal-related contexts that refine daily frequency
-                      is_f2_meal = re.search(r'(breakfast|lunch|dinner|supper|meal)', f2_text)
-
-                      between = sig_text[f1['frequency_text_end']:f2['frequency_text_start']].lower()
-                      # Check for additive connectors (and, or, comma) ONLY in the text BETWEEN F1 and F2
-                      # Don't count "and" if it's within F2 (like "monday wednesday and friday")
-                      is_additive = bool(re.search(r'\band\b|\bor\b|,', between))
-                      # Special case: If F2 is days of week, "and" in between is often listing days, not additive
-                      if is_f2_days and is_additive:
-                           # Check if 'and' in between just separates F1 from F2
-                           # If between is very short (just whitespace and 'on'), it's refinement
-                           if len(between.strip()) < 5 or between.strip() in ['', 'on']:
-                               is_additive = False
-                      # Check if meal context is preceded by 'with' - indicating context, not additional frequency
-                      is_with_meal = bool(re.search(r'\bwith\b', between)) and is_f2_meal
-                      
-                      # Filter scenarios:
-                      # 1. F1 is ONCE daily, F2 is specific/contextual, no additive connector -> remove F1
-                      if (is_f1_once_daily and (is_f2_time_of_day or is_f2_weekly or is_f2_days or is_f2_meal)) and not is_additive:
-                           indices_to_remove.add(i)
-                      # 2. F1 is multi-daily, F2 is a meal with "with" prefix OR F2 is specific time -> remove F2 (it's context)
-                      # e.g. "twice daily with dinner" -> freq=2 (remove dinner)
-                      # e.g. "twice daily at 9am" -> freq=2 (remove 9am)
-                      elif is_f1_multi_daily and (is_with_meal or (is_f2_time_of_day and not is_additive)):
-                           indices_to_remove.add(i + 1)
-                      # 3. F1 is meal, F2 is also meal (e.g. "breakfast and dinner") -> both are context, remove both
-                      elif re.search(r'(breakfast|lunch|dinner|supper|meal)', f1_text) and is_f2_meal:
-                           indices_to_remove.add(i)
-                           indices_to_remove.add(i + 1)
-                      # 4. F1 is hourly (every X hours), F2 is just am/pm -> F2 is time context, remove F2
-                      elif f1.get('period_unit') == 'hour' and re.search(r'^(am|pm)$', f2_text.strip()):
-                           indices_to_remove.add(i + 1)
-                  
-                  # Additional pass: If we have an hourly frequency, remove all standalone am/pm
-                  has_hourly = any(f.get('period_unit') == 'hour' for f in frequencies)
-                  if has_hourly:
-                      for i, f in enumerate(frequencies):
-                          f_text = f.get('frequency_text', '').strip().lower()
-                          if f_text in ['am', 'pm'] and f.get('period_unit') != 'hour':
-                              indices_to_remove.add(i)
-                  
-                  if indices_to_remove:
-                       frequencies = [f for i, f in enumerate(frequencies) if i not in indices_to_remove]
-                       all_matches['frequency'] = frequencies
+             # if len(frequencies) > 1:
+                  # Refinement moved to get_max_dose_per_day
+                  # pass
 
              # Re-evaluate logic with filtered list
              if len(frequencies) > 1:

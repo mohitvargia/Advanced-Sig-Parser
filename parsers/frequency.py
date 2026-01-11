@@ -195,7 +195,7 @@ class FrequencySpecificDayOfWeek(FrequencyParser):
 # 8am | 5:00 pm | 17:00
 # frequency = 1 (per occurrence)
 class FrequencySpecificTime(FrequencyParser):
-    pattern = r'(?:(?:at|@)\s?)?(?P<time>(?:(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s?(?:am|pm|a\.m\.|p\.m\.)|(?:0?[0-9]|1[0-9]|2[0-3]):[0-5][0-9]))\b'
+    pattern = r'(?:(?:at|@)\s?)?(?P<time>(?:(?:1[0-2]|0?[1-9])(?::[0-5][0-9])?\s?(?:am|pm|a\.m\.|p\.m\.|p)|(?:0?[0-9]|1[0-9]|2[0-3]):[0-5][0-9])|(?:1[0-2]|0?[1-9])\s?(?:in the (?:morning|evening|afternoon)|at night))\b'
     def normalize_match(self, match):
         frequency = 1
         period = 1

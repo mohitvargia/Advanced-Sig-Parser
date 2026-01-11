@@ -23,8 +23,15 @@ class TestBasicSigs(unittest.TestCase):
             ("take 1 every morning", True, 1.0),
             ("take 1 twice daily", True, 2.0),
             ("take 1 tablet by mouth every day at 5:00 pm", True, 1.0),
-            ("take one tablet by mouth twice daily at 9am-5p", True, 7.0),
+            ("take one tablet by mouth twice daily at 9am-5p", True, 2.0),
             ("take 2 tablet by mouth every morning and 1 tablet by mouth every night at bed", True, 3.0),
+            
+            # New Fixed Sigs
+            ("take one tablet by mouth daily at 5 in the evening", True, 1.0),
+            ("take 1 tablet 200 mg total by mouth every 8 hours take at 6am 2pm and 10pm", True, 3.0),
+            ("take 1 tablet 40 mg total by mouth 2 times daily 8:00 am and 2:00 pm", True, 2.0),
+            ("take one tab every day bid", True, 2.0),
+            ("take 0.5 tablets by mouth 2 times daily 1/2 tab bid", False, None),
             
             # Parsable but No Max Dose (PRN, Missing Freq, or Strength-only)
             ("take 1 mg by mouth daily", True, 1.0),
